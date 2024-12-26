@@ -1,40 +1,68 @@
-#![allow(dead_code)]
+#![allow(dead_code)] // TODO remove this at some point
 
-mod payload;
+/*
+ * Modules
+ */
+
 mod channel;
+mod error;
+mod flag;
+mod io;
 mod message;
+mod processor;
 mod queue;
-mod test_payload;
+mod storage;
+
+/*
+ * Public interface
+ */
 
 pub use channel::{Channel, Consumer, Producer};
-pub use payload::Payload;
+pub use error::Error;
+pub use message::Payload;
+
+/*
+ * Modules for testing
+ */
+
+#[cfg(test)]
+mod temp_file;
+#[cfg(test)]
+mod test_payload;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
     use crate::test_payload::TestPayload;
+    use crate::*;
+    use std::time::Instant;
 
     #[test]
     fn test_global() {
-        let t0 = Instant::now();
-        let channel: Channel<TestPayload> = Channel::<TestPayload>::new(t0);
+        let channel: Channel<TestPayload> = Channel::<TestPayload>::new();
         let _: Channel<TestPayload> = channel.clone();
-        let _: Duration = channel.now();
 
         let producer: Producer<TestPayload> = channel.new_producer();
-        producer.push(TestPayload::new(0));
+        producer.push(TestPayload::default());
         let _: &Channel<TestPayload> = producer.channel();
 
         let consumer: Consumer<TestPayload> = channel.new_consumer();
         let _: &Channel<TestPayload> = consumer.channel();
 
-        let content: usize = 123456789;
-        producer.push(TestPayload::new(content));
-        consumer.pull().first().unwrap().get_payload().check(content);
+        let vec_content = [123456789, 42, 0];
 
-        let other_content: usize = 42;
-        producer.push(TestPayload::new(other_content));
-        consumer.wait_pull().first().unwrap().get_payload().check(other_content);
+        for content in vec_content {
+            let start_time = Instant::now();
+            producer.push(TestPayload::new(content));
+
+            let messages = consumer.pull();
+            let stop_time = Instant::now();
+
+            let message = messages.first().unwrap();
+            message.get_payload().check(content);
+
+            let push_time = message.get_type_stamp();
+            assert!(push_time > start_time);
+            assert!(stop_time > push_time);
+        }
     }
 }

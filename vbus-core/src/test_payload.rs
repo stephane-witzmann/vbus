@@ -1,31 +1,33 @@
-use crate::payload::Payload;
+use crate::message::Payload;
 
-pub struct TestPayload {
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct TestPayload {
     data: usize,
 }
 
+impl Payload for TestPayload {}
+
 impl TestPayload {
     pub fn new(data: usize) -> Self {
-        Self {
-            data,
-        }
+        Self { data }
     }
 
     pub fn check(&self, value: usize) {
         assert_eq!(self.data, value);
     }
-}
 
-impl Payload for TestPayload {
-    fn format_name() -> &'static str {
-        "TestPayload"
-    }
-
-    fn to_binary(&self) -> Vec<u8> {
-        todo!()
-    }
-
-    fn from_binary(_: &Vec<u8>) -> Option<Self> {
-        todo!()
+    pub fn value(&self) -> usize {
+        self.data
     }
 }
+
+impl Default for TestPayload {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct EmptyPayload {}
+
+impl Payload for EmptyPayload {}

@@ -1,6 +1,0 @@
-[package]
-name = "vbus-tools"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]

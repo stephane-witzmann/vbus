@@ -1,33 +1,26 @@
-use std::time::Instant;
-use vbus_core::Channel;
-use vbus_core::Payload;
+#![allow(dead_code)]
 
-pub struct TestPayload {
-}
+use vbus_core::{Channel, Payload};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TestPayload {}
 
 impl TestPayload {
     pub fn new() -> Self {
-        Self {
-        }
+        Self {}
     }
 }
 
-impl Payload for TestPayload {
-    fn format_name() -> &'static str {
-        "TestPayload"
-    }
-
-    fn to_binary(&self) -> Vec<u8> {
-        todo!()
-    }
-
-    fn from_binary(_: &Vec<u8>) -> Option<Self> {
-        todo!()
+impl Default for TestPayload {
+    fn default() -> Self {
+        Self::new()
     }
 }
+
+impl Payload for TestPayload {}
 
 fn main() {
-    let channel = Channel::<TestPayload>::new(Instant::now());
+    let channel = Channel::<TestPayload>::new();
     let p = channel.new_producer();
     let c = channel.new_consumer();
     p.push(TestPayload::new());

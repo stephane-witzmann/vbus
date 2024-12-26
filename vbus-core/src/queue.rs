@@ -1,27 +1,15 @@
-use crate::message::Message;
+use crate::message::{Message, Payload};
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use crate::payload::Payload;
 
-pub struct Queue<T: Payload> {
+pub(crate) struct Queue<T: Payload> {
     queue_data: Arc<QueueData<T>>,
-}
-
-struct QueueData<T: Payload> {
-    messages: Mutex<VecDeque<Message<T>>>,
-    condvar: Condvar,
 }
 
 impl<T: Payload> Queue<T> {
     pub fn new() -> Self {
         Self {
             queue_data: Arc::new(QueueData::new()),
-        }
-    }
-
-    pub fn clone(&self) -> Self {
-        Self {
-            queue_data: self.queue_data.clone(),
         }
     }
 
@@ -37,8 +25,10 @@ impl<T: Payload> Queue<T> {
         self.queue_data.wait_pull()
     }
 
-    pub fn wake_up(&self) {
-        self.queue_data.wake_up();
+    pub fn waker(&self) -> Waker<T> {
+        Waker {
+            queue_data: self.queue_data.clone(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -46,10 +36,41 @@ impl<T: Payload> Queue<T> {
     }
 }
 
+impl<T: Payload> Clone for Queue<T> {
+    fn clone(&self) -> Self {
+        Self {
+            queue_data: self.queue_data.clone(),
+        }
+    }
+}
+
 impl<T: Payload> PartialEq for Queue<T> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.queue_data, &other.queue_data)
     }
+}
+
+pub struct Waker<T: Payload> {
+    queue_data: Arc<QueueData<T>>,
+}
+
+impl<T: Payload> Waker<T> {
+    pub fn wake_up(&self) {
+        self.queue_data.wake_up();
+    }
+}
+
+impl<T: Payload> Clone for Waker<T> {
+    fn clone(&self) -> Self {
+        Self {
+            queue_data: self.queue_data.clone(),
+        }
+    }
+}
+
+struct QueueData<T: Payload> {
+    messages: Mutex<VecDeque<Message<T>>>,
+    condvar: Condvar,
 }
 
 impl<T: Payload> QueueData<T> {
@@ -115,16 +136,17 @@ impl<T: Payload> QueueData<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread::sleep;
     use crate::test_payload::TestPayload;
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
 
     fn push_many(queue: &Queue<TestPayload>, n: usize) {
         for i in 0..n {
-            queue.push(Message::new(std::time::Duration::default(), TestPayload::new(i)));
+            queue.push(Message::new(Instant::now(), TestPayload::new(i)));
         }
     }
 
-    fn check_many(messages: &Vec<Message<TestPayload>>, n: usize) {
+    fn check_many(messages: &[Message<TestPayload>], n: usize) {
         assert_eq!(messages.len(), n);
         for i in 0..n {
             messages[i].get_payload().check(i);
@@ -152,25 +174,49 @@ mod tests {
 
     #[test]
     fn test_wait_pull() {
+        const WAIT_TIME: Duration = Duration::from_millis(200);
+
         let queue = Queue::new();
-        let wait_time = std::time::Duration::from_millis(200);
-        let now = std::time::Instant::now();
+        let start_time = Instant::now();
 
         let queue_for_thread = queue.clone();
-        let now_for_thread = now.clone();
         let join_handle = std::thread::spawn(move || {
-            sleep(wait_time);
-            queue_for_thread.push(Message::new(now_for_thread.elapsed(), TestPayload::new(0)));
+            sleep(WAIT_TIME);
+            queue_for_thread.push(Message::new(Instant::now(), TestPayload::default()));
         });
 
         let v = queue.wait_pull();
-        let elapsed = now.elapsed();
+        let elapsed = start_time.elapsed();
 
         join_handle.join().unwrap();
 
-        assert!(elapsed >= wait_time);
-        assert!(elapsed >= v.first().unwrap().get_type_stamp());
+        assert!(elapsed >= WAIT_TIME);
+        assert!(elapsed >= v.first().unwrap().get_type_stamp() - start_time);
     }
+
+    #[test]
+    fn test_waker() {
+        const WAIT_TIME: Duration = Duration::from_millis(200);
+
+        let queue = Queue::<TestPayload>::new();
+        let start_time = Instant::now();
+
+        let waker = queue.waker();
+
+        let join_handle = std::thread::spawn(move || {
+            sleep(WAIT_TIME);
+            waker.wake_up()
+        });
+
+        let v = queue.wait_pull();
+        let elapsed = start_time.elapsed();
+
+        join_handle.join().unwrap();
+
+        assert!(elapsed >= WAIT_TIME);
+        assert!(v.is_empty());
+    }
+
 
     #[test]
     fn test_eq() {
