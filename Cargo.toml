@@ -1,7 +1,7 @@
 [workspace]
-members = ["vbus-core", "vbus-sensors", "vbus-examples"]
+members = ["vbus-core", "vbus-sensors"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
-edition = "2021"
+version = "0.3.0"
+edition = "2024"

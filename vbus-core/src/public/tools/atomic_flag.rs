@@ -1,5 +1,5 @@
 use std::sync::atomic::AtomicBool;
-use std::sync::{atomic, Arc};
+use std::sync::{Arc, atomic};
 
 pub fn atomic_flag() -> (AtomicFlagReader, AtomicFlagWriter) {
     let flag = Arc::new(atomic::AtomicBool::new(false));

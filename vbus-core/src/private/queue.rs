@@ -1,4 +1,5 @@
-use crate::message::{Message, Payload};
+use crate::Message;
+use crate::Payload;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -17,6 +18,7 @@ impl<T: Payload> Queue<T> {
         self.queue_data.push(message);
     }
 
+    #[cfg(test)]
     pub fn pull(&self) -> Vec<Message<T>> {
         self.queue_data.pull()
     }
@@ -31,6 +33,7 @@ impl<T: Payload> Queue<T> {
         }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.queue_data.len()
     }
@@ -49,6 +52,8 @@ impl<T: Payload> PartialEq for Queue<T> {
         Arc::ptr_eq(&self.queue_data, &other.queue_data)
     }
 }
+
+impl<T: Payload> Eq for Queue<T> {}
 
 pub struct Waker<T: Payload> {
     queue_data: Arc<QueueData<T>>,
@@ -97,6 +102,7 @@ impl<T: Payload> QueueData<T> {
         self.condvar.notify_all();
     }
 
+    #[cfg(test)]
     fn pull(&self) -> Vec<Message<T>> {
         let mut v = Vec::<Message<T>>::new();
 
@@ -128,6 +134,7 @@ impl<T: Payload> QueueData<T> {
         }
     }
 
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.lock().len()
     }
@@ -136,7 +143,7 @@ impl<T: Payload> QueueData<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_payload::TestPayload;
+    use crate::private::test_tools::TestPayload;
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -216,7 +223,6 @@ mod tests {
         assert!(elapsed >= WAIT_TIME);
         assert!(v.is_empty());
     }
-
 
     #[test]
     fn test_eq() {

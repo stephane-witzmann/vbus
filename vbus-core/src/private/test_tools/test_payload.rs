@@ -1,6 +1,6 @@
-use crate::message::Payload;
+use crate::Payload;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode, PartialEq, Debug)]
 pub(crate) struct TestPayload {
     data: usize,
 }
@@ -26,8 +26,3 @@ impl Default for TestPayload {
         Self::new(0)
     }
 }
-
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct EmptyPayload {}
-
-impl Payload for EmptyPayload {}

@@ -1,31 +1,37 @@
-use crate::flag::*;
-use crate::{Consumer, Payload};
-use std::thread::{spawn, JoinHandle};
-use crate::queue::Waker;
+use crate::Payload;
+use crate::private::Consumer;
+use crate::private::queue::Waker;
+use crate::tools::atomic_flag::*;
+use std::thread::{JoinHandle, spawn};
 
-pub struct Processor<T: Payload> {
+pub struct ThreadedConsumer<T: Payload> {
     waker: Waker<T>,
     stopper: AtomicFlagWriter,
     thread_join_handle: Option<JoinHandle<()>>, // Option -> we can own the handle in drop()
 }
 
-impl<T: Payload> Processor<T> {
-    pub fn new(consumer: Consumer<T>, mut process: impl FnMut(Vec<crate::message::Message<T>>) + Send + 'static) -> Self {
+impl<T: Payload> ThreadedConsumer<T> {
+    pub(crate) fn new(
+        consumer: Consumer<T>,
+        mut process: impl FnMut(Vec<crate::Message<T>>) + Send + 'static,
+    ) -> Self {
         let (flag_reader, flag_writer) = atomic_flag();
 
         let waker = consumer.wait_pull_waker();
 
-        let thread_join_handle = spawn(move || loop {
-            let messages = consumer.wait_pull();
+        let thread_join_handle = spawn(move || {
+            loop {
+                let messages = consumer.wait_pull();
 
-            if flag_reader.check() {
-                return;
-            }
+                if flag_reader.check() {
+                    return;
+                }
 
-            process(messages);
+                process(messages);
 
-            if flag_reader.check() {
-                return;
+                if flag_reader.check() {
+                    return;
+                }
             }
         });
 
@@ -37,7 +43,7 @@ impl<T: Payload> Processor<T> {
     }
 }
 
-impl<T: Payload> Drop for Processor<T> {
+impl<T: Payload> Drop for ThreadedConsumer<T> {
     fn drop(&mut self) {
         self.stopper.raise();
         self.waker.wake_up();
@@ -47,33 +53,33 @@ impl<T: Payload> Drop for Processor<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc,Mutex};
+    use super::ThreadedConsumer;
+    use crate::Channel;
+    use crate::private::test_tools::TestPayload;
+    use std::sync::{Arc, Mutex};
     use std::thread::sleep;
     use std::time::Duration;
-    use super::Processor;
-    use crate::{Channel, Producer};
-    use crate::test_payload::TestPayload;
 
     #[test]
-    fn test_processor() {
-        let channel = Channel::<TestPayload>::default();
+    fn test_threaded_consumer() {
+        let channel = Channel::<TestPayload>::new();
         let reference = [123456789, 42, 0usize];
         let processed = Arc::new(Mutex::new(Vec::<usize>::new()));
         let processed_for_thread = processed.clone();
 
-        let processor = Processor::new(channel.new_consumer(), move |input| {
+        let tc = ThreadedConsumer::new(channel.new_consumer(), move |input| {
             let mut output = processed_for_thread.lock().unwrap();
             input.iter().for_each(|message| {
                 output.push(message.get_payload().value());
             });
         });
 
-        let producer: Producer<TestPayload> = channel.new_producer();
-        reference.iter()
-            .for_each(|x| producer.push(TestPayload::new(*x)));
+        reference
+            .iter()
+            .for_each(|x| channel.push(TestPayload::new(*x)));
 
         sleep(Duration::from_millis(500));
-        drop(processor);
+        drop(tc);
         sleep(Duration::from_millis(200));
 
         assert_eq!(processed.lock().unwrap().len(), reference.len());

@@ -1,13 +1,23 @@
-use crate::{Error, Payload};
+use crate::{Error, Message, Payload};
 use std::io::{Read, Write};
 use std::mem::MaybeUninit;
+use std::time::Instant;
 
 const MAGIC: [u8; 4] = [b'V', b'B', b'U', b'S'];
 const CURRENT_VERSION: u16 = 1;
 
 struct ChunkHeader {
     size: usize,
+    time_stamp: Instant,
 }
+
+impl ChunkHeader {
+    fn new(size: usize, time_stamp: Instant) -> Self {
+        Self { size, time_stamp }
+    }
+}
+
+struct ChunkData(Vec<u8>, Instant);
 
 struct StreamHeader {
     magic: [u8; 4],
@@ -27,6 +37,7 @@ pub(crate) struct OutputStream<T: Payload> {
     write: Box<dyn Write + Send>,
     _phantom: std::marker::PhantomData<T>,
 }
+
 impl<T: Payload> OutputStream<T> {
     pub fn new(write: Box<dyn Write + Send>) -> Result<Self, Error> {
         let mut stream = Self {
@@ -40,20 +51,22 @@ impl<T: Payload> OutputStream<T> {
         Ok(stream)
     }
 
-    pub fn append(&mut self, data: &T) -> Result<(), Error> {
-        let encoded = bincode::serialize(data)?;
-        self.append_bytes(&encoded)?;
+    pub fn append(&mut self, message: &Message<T>) -> Result<(), Error> {
+        let encoded = bincode::encode_to_vec(message.get_payload(), bincode::config::standard())?;
+        let chunk_data = ChunkData(encoded, message.get_type_stamp());
+        self.append_bytes(chunk_data)?;
         Ok(())
     }
 
     fn append_string(&mut self, string: &str) -> Result<(), Error> {
-        self.append_bytes(string.as_bytes())
+        let chunk_data = ChunkData(string.as_bytes().to_vec(), Instant::now());
+        self.append_bytes(chunk_data)
     }
 
-    fn append_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
-        let header = ChunkHeader { size: data.len() };
+    fn append_bytes(&mut self, chunk_data: ChunkData) -> Result<(), Error> {
+        let header = ChunkHeader::new(chunk_data.0.len(), chunk_data.1);
         self.write_any(&header)?;
-        self.write_bytes(data)?;
+        self.write_bytes(chunk_data.0.as_slice())?;
         Ok(())
     }
 
@@ -91,10 +104,10 @@ impl<T: Payload> InputStream<T> {
         Ok(stream)
     }
 
-    pub fn get(&mut self) -> Result<T, Error> {
-        let bytes = self.read_chunk()?;
-        let decoded = bincode::deserialize(bytes.as_slice())?;
-        Ok(decoded)
+    pub fn get(&mut self) -> Result<Message<T>, Error> {
+        let chunk_data = self.read_chunk()?;
+        let (decoded, _): (T, usize) = bincode::decode_from_slice(chunk_data.0.as_slice(), bincode::config::standard())?;
+        Ok(Message::new(chunk_data.1, decoded))
     }
 
     fn get_and_check_header(&mut self) -> Result<(), Error> {
@@ -112,8 +125,8 @@ impl<T: Payload> InputStream<T> {
     }
 
     fn get_string(&mut self) -> Result<String, Error> {
-        let bytes = self.read_chunk()?;
-        Ok(String::from_utf8_lossy(&bytes).to_string())
+        let chunk_data = self.read_chunk()?;
+        Ok(String::from_utf8_lossy(chunk_data.0.as_slice()).to_string())
     }
 
     fn read_stream_header(&mut self) -> Result<StreamHeader, Error> {
@@ -123,7 +136,7 @@ impl<T: Payload> InputStream<T> {
         unsafe { Ok(buffer.assume_init()) }
     }
 
-    fn read_chunk(&mut self) -> Result<Vec<u8>, Error> {
+    fn read_chunk(&mut self) -> Result<ChunkData, Error> {
         let header = &self.read_chunk_header()?;
         self.read_chunk_data(header)
     }
@@ -151,7 +164,7 @@ impl<T: Payload> InputStream<T> {
         unsafe { Ok(buffer.assume_init()) }
     }
 
-    fn read_chunk_data(&mut self, header: &ChunkHeader) -> Result<Vec<u8>, Error> {
+    fn read_chunk_data(&mut self, header: &ChunkHeader) -> Result<ChunkData, Error> {
         let mut buffer = Vec::with_capacity(header.size);
 
         // Avoid buffer initialization
@@ -162,22 +175,23 @@ impl<T: Payload> InputStream<T> {
 
         self.read.read_exact(buffer.as_mut_slice())?;
 
-        Ok(buffer)
+        Ok(ChunkData(buffer, header.time_stamp))
     }
 }
 
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    core::slice::from_raw_parts((p as *const T) as *const u8, size_of::<T>())
+    unsafe { core::slice::from_raw_parts((p as *const T) as *const u8, size_of::<T>()) }
 }
 
 unsafe fn any_as_u8_mut_slice<T: Sized>(p: &mut T) -> &mut [u8] {
-    core::slice::from_raw_parts_mut((p as *mut T) as *mut u8, size_of::<T>())
+    unsafe { core::slice::from_raw_parts_mut((p as *mut T) as *mut u8, size_of::<T>()) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_payload::{EmptyPayload, TestPayload};
+    use crate::private::test_tools::{EmptyPayload, TestPayload};
+    use std::time::Duration;
 
     #[test]
     fn test_default_stream_header() {
@@ -272,9 +286,15 @@ mod tests {
         let mut ostream = OutputStream::<TestPayload>::new(Box::new(writer)).unwrap();
         let mut istream = InputStream::<TestPayload>::new(Box::new(reader)).unwrap();
 
+        let now = Instant::now();
+
         for i in 0..100usize {
-            ostream.append(&TestPayload::new(i)).unwrap();
-            istream.get().unwrap().check(i);
+            let time_stamp = now + Duration::from_secs(i as u64);
+            let m = Message::new(time_stamp, TestPayload::new(i));
+            ostream.append(&m).unwrap();
+            let read = istream.get().unwrap();
+            assert_eq!(read.get_type_stamp(), time_stamp);
+            read.get_payload().check(i);
         }
 
         drop(ostream);
@@ -291,7 +311,7 @@ mod tests {
     #[test]
     fn test_stream_slow() {
         const PAYLOAD_VALUE: usize = 42;
-        const SLEEP_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+        const SLEEP_TIME: Duration = Duration::from_millis(100);
 
         let (reader, writer) = os_pipe::pipe().unwrap();
         let mut ostream = OutputStream::<TestPayload>::new(Box::new(writer)).unwrap();
@@ -299,12 +319,13 @@ mod tests {
 
         // Have the reader wait for some data
         let handle = std::thread::spawn(move || {
-            istream.get().unwrap().check(PAYLOAD_VALUE);
+            istream.get().unwrap().get_payload().check(PAYLOAD_VALUE);
         });
 
-        let encoded = bincode::serialize(&TestPayload::new(PAYLOAD_VALUE)).unwrap();
+        let encoded = bincode::encode_to_vec(&TestPayload::new(PAYLOAD_VALUE), bincode::config::standard()).unwrap();
         let header = ChunkHeader {
             size: encoded.len(),
+            time_stamp: Instant::now(),
         };
         let header_slice = unsafe { any_as_u8_slice(&header) };
 
